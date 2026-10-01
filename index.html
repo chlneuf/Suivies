@@ -37,11 +37,33 @@ nav button{border:0;background:none;color:var(--mut);padding:10px 4px}nav button
 .m input:checked+span{border-color:var(--acc);background:var(--accBg)}.m input:focus-visible+span{outline:2px solid var(--acc)}
 .li{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)}.li>div,.li>label{flex:1;margin:0;font-weight:400}.done{text-decoration:line-through;color:var(--mut)}
 @media(prefers-reduced-motion:no-preference){#sheet:not([hidden]){animation:up .18s ease-out}@keyframes up{from{transform:translateY(16px);opacity:0}}}
+
+#auth{position:fixed;inset:0;background:var(--bg);z-index:20;display:grid;place-items:center;padding:20px}
+#auth[hidden]{display:none}.authbox{width:min(100%,420px);background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px}
+.authbox h2{margin:0 0 8px}.authbox .sub{margin-bottom:16px}.authmsg{min-height:22px;margin:4px 0 10px;font-size:14px}.sync{font-size:12px;color:var(--mut);margin:8px 0 0}
 </style></head><body>
-<header><h1>Mes proches</h1><div class="sub" id="dt"></div></header>
+<header><h1>Mes proches</h1><div class="sub" id="dt"></div><div class="sync" id="syncstatus">Stockage local</div></header>
 <main id="main"></main>
 <nav><button data-act="nav" data-v="week">Cette semaine</button><button data-act="nav" data-v="ppl">Personnes</button><button data-act="nav" data-v="dates">Dates</button></nav>
+
+<div id="auth" hidden>
+  <div class="authbox">
+    <h2>Synchroniser Mes proches</h2>
+    <div class="sub">Connecte-toi avec la même adresse e-mail sur ton ordinateur et ton téléphone.</div>
+    <label for="ae">E-mail</label>
+    <input id="ae" type="email" autocomplete="email" placeholder="ton@email.com">
+    <label for="ap">Mot de passe</label>
+    <input id="ap" type="password" autocomplete="current-password" placeholder="Au moins 6 caractères">
+    <div id="authmsg" class="authmsg"></div>
+    <div class="btns">
+      <button class="pri" data-act="login">Se connecter</button>
+      <button data-act="signup">Créer le compte</button>
+    </div>
+    <div class="sync">Les données sont enregistrées dans ta base Supabase et non seulement sur l'appareil.</div>
+  </div>
+</div>
 <div id="sheet" hidden></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -49,7 +71,10 @@ const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+Stri
 const today=()=>iso(new Date()),dd=s=>new Date(s+'T12:00:00'),diff=(a,b)=>Math.round((dd(b)-dd(a))/864e5);
 const fmt=s=>dd(s).toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
 const MOODS=['😟','😕','😐','🙂','😄'],MN=['Au plus bas','Pas top','Moyen','Bien','Au top'];
-let S={people:[]},view='week',open=null,tab='care',dbDoc=null,timer,armed=false;
+let S={people:[]},view='week',open=null,tab='care',timer,armed=false;
+const SUPABASE_URL='REMPLACE_PAR_TON_URL_SUPABASE';
+const SUPABASE_KEY='REMPLACE_PAR_TA_CLE_PUBLISHABLE_SUPABASE';
+let sb=null,currentUser=null,saveTimer=null,syncChannel=null,saving=false;
 const P=id=>S.people.find(p=>p.id===id);
 const last=p=>p.last||p.created;
 const due=p=>{const d=dd(last(p));d.setDate(d.getDate()+p.freq);return iso(d)};
@@ -95,17 +120,94 @@ function sheetV(){
     '<div class="tabs">'+T.map(t=>'<button data-act="tab" data-t="'+t[0]+'" class="'+(tab===t[0]?'on':'')+'">'+t[1]+'</button>').join('')+'</div>'+b+'</div>'}
 
 function render(){
+  const ss=$('#syncstatus'); if(ss) ss.textContent=currentUser?'Synchronisé en ligne':'Stockage local';
   $('#dt').textContent=new Date().toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'});
   $('#main').innerHTML=view==='week'?weekV():view==='ppl'?pplV():datesV();
   document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===view));
   const s=$('#sheet');s.hidden=!open;s.innerHTML=open?sheetV():''}
-function save(){try{localStorage.setItem('mp',JSON.stringify(S))}catch(e){}
-  clearTimeout(timer);timer=setTimeout(async()=>{if(dbDoc){try{await dbDoc.set({people:S.people})}catch(e){}}},400)}
+function localSave(){
+  try{localStorage.setItem('mp',JSON.stringify(S))}catch(e){}
+}
+function setAuthMsg(msg,bad=false){
+  const el=$('#authmsg'); if(el){el.textContent=msg;el.className='authmsg'+(bad?' bad':'')}
+}
+function showAuth(show){$('#auth').hidden=!show}
+async function save(){
+  localSave();
+  if(!sb||!currentUser)return;
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(async()=>{
+    saving=true;
+    const {error}=await sb.from('app_data').upsert({
+      user_id:currentUser.id,
+      people:S.people,
+      updated_at:new Date().toISOString()
+    });
+    saving=false;
+    if(error) console.error('Synchronisation:',error);
+  },350);
+}
 function addLog(p,type,text){(p.log=p.log||[]).push({date:today(),type,text});p.last=today();p.flag=false}
+async function cloudLoad(){
+  if(!sb||!currentUser)return;
+  const {data,error}=await sb.from('app_data').select('people').eq('user_id',currentUser.id).maybeSingle();
+  if(error){console.error(error);return}
+  if(data&&Array.isArray(data.people)){
+    S={people:data.people};
+    localSave();render();
+  }else if(S.people.length){
+    await sb.from('app_data').upsert({user_id:currentUser.id,people:S.people,updated_at:new Date().toISOString()});
+  }
+}
+function subscribeSync(){
+  if(!sb||!currentUser)return;
+  if(syncChannel)sb.removeChannel(syncChannel);
+  syncChannel=sb.channel('app-data-'+currentUser.id)
+    .on('postgres_changes',{
+      event:'UPDATE',schema:'public',table:'app_data',
+      filter:'user_id=eq.'+currentUser.id
+    },payload=>{
+      if(saving)return;
+      if(payload.new && Array.isArray(payload.new.people)){
+        S={people:payload.new.people};localSave();render();
+      }
+    }).subscribe();
+}
+async function bootSupabase(){
+  if(!SUPABASE_URL.startsWith('http') || SUPABASE_KEY.startsWith('REMPLACE')){
+    showAuth(false);
+    render();
+    return;
+  }
+  sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{
+    auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}
+  });
+  const {data}=await sb.auth.getSession();
+  currentUser=data.session?.user||null;
+  if(currentUser){
+    showAuth(false); await cloudLoad(); subscribeSync(); render();
+  }else{
+    showAuth(true); render();
+  }
+}
 
 document.addEventListener('click',e=>{
   const el=e.target.closest('[data-act]');if(!el)return;
   const a=el.dataset.act,id=el.dataset.id,i=+el.dataset.i,p=P(open||id);
+  if(a==='login'||a==='signup'){
+    if(!sb){setAuthMsg('Configure d’abord Supabase dans le fichier.',true);return}
+    const email=$('#ae').value.trim(),password=$('#ap').value;
+    if(!email||!password){setAuthMsg('Renseigne ton e-mail et ton mot de passe.',true);return}
+    setAuthMsg('Connexion…');
+    const r=a==='login'
+      ? await sb.auth.signInWithPassword({email,password})
+      : await sb.auth.signUp({email,password});
+    if(r.error){setAuthMsg(r.error.message,true);return}
+    if(r.data.session){
+      currentUser=r.data.user;showAuth(false);await cloudLoad();subscribeSync();render();
+    }else setAuthMsg('Compte créé. Vérifie ton e-mail si Supabase le demande.');
+    return;
+  }
   if(a==='nav'){view=el.dataset.v}
   else if(a==='open'){open=id;tab='care';armed=false}
   else if(a==='close'){open=null}
@@ -129,21 +231,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='nn')d
 async function init(){
   try{const l=localStorage.getItem('mp');if(l)S=JSON.parse(l)}catch(e){}
   render();
-  try{
-    if(!window.claude)return;
-    const [db,user]=await Promise.all([claude.use('db'),claude.use('user')]);
-    if(!db||!user)return;
-    const id=await user.id();if(!id)return;
-    dbDoc=db.doc('data/users/'+id+'/app');
-    const sn=await dbDoc.get();
-    if(sn.exists){S={people:(sn.data().people)||[]};try{localStorage.setItem('mp',JSON.stringify(S))}catch(e){}}
-    else if(S.people.length){dbDoc.set({people:S.people}).catch(()=>{})}
-    render();
-  }catch(e){}
+  await bootSupabase();
 }
 init();
-</script>
-<!-- Contenu intégré de « Mes proches.md » :
-# Mes proches
--->
-</body></html>
+</script></body></html>
