@@ -37,7 +37,33 @@ nav button{border:0;background:none;color:var(--mut);padding:10px 4px}nav button
 .m input:checked+span{border-color:var(--acc);background:var(--accBg)}.m input:focus-visible+span{outline:2px solid var(--acc)}
 .li{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)}.li>div,.li>label{flex:1;margin:0;font-weight:400}.done{text-decoration:line-through;color:var(--mut)}
 @media(prefers-reduced-motion:no-preference){#sheet:not([hidden]){animation:up .18s ease-out}@keyframes up{from{transform:translateY(16px);opacity:0}}}
+
+#auth{position:fixed;inset:0;background:var(--bg);z-index:20;display:grid;place-items:center;padding:20px}
+#auth[hidden]{display:none}
+.authbox{width:min(100%,420px);background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;box-shadow:0 10px 30px rgba(0,0,0,.08)}
+.authbox h2{margin:0 0 6px}.authbox p{margin:0 0 16px;color:var(--mut);font-size:14px}
+.authmsg{min-height:20px;font-size:14px;margin:4px 0 10px}.authmsg.bad{color:var(--bad)}
+.authuser{position:fixed;right:16px;top:12px;z-index:6;font-size:12px;color:var(--mut)}
+.authuser button{padding:6px 9px;font-size:12px}
+body.locked>header,body.locked>main,body.locked>nav{display:none}
 </style></head><body>
+
+<div id="auth">
+  <div class="authbox">
+    <h2>Mes proches</h2>
+    <p>Connecte-toi pour retrouver tes personnes sur tous tes appareils.</p>
+    <label for="authEmail">E-mail</label>
+    <input id="authEmail" type="email" autocomplete="username" placeholder="ton e-mail">
+    <label for="authPassword">Mot de passe</label>
+    <input id="authPassword" type="password" autocomplete="current-password" placeholder="Ton mot de passe">
+    <div id="authMsg" class="authmsg"></div>
+    <button id="authBtn" class="pri" style="width:100%">Se connecter</button>
+  </div>
+</div>
+<div id="authUser" class="authuser" hidden>
+  <span id="authEmailLabel"></span>
+  <button id="logoutBtn">Se déconnecter</button>
+</div>
 <header><h1>Mes proches</h1><div class="sub" id="dt"></div></header>
 <main id="main"></main>
 <nav><button data-act="nav" data-v="week">Cette semaine</button><button data-act="nav" data-v="ppl">Personnes</button><button data-act="nav" data-v="dates">Dates</button></nav>
@@ -49,7 +75,7 @@ const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+Stri
 const today=()=>iso(new Date()),dd=s=>new Date(s+'T12:00:00'),diff=(a,b)=>Math.round((dd(b)-dd(a))/864e5);
 const fmt=s=>dd(s).toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
 const MOODS=['😟','😕','😐','🙂','😄'],MN=['Au plus bas','Pas top','Moyen','Bien','Au top'];
-let S={people:[]},view='week',open=null,tab='care',dbDoc=null,timer,armed=false;
+let S={people:[]},view='week',open=null,tab='care',timer,armed=false;
 const P=id=>S.people.find(p=>p.id===id);
 const last=p=>p.last||p.created;
 const due=p=>{const d=dd(last(p));d.setDate(d.getDate()+p.freq);return iso(d)};
@@ -99,8 +125,21 @@ function render(){
   $('#main').innerHTML=view==='week'?weekV():view==='ppl'?pplV():datesV();
   document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===view));
   const s=$('#sheet');s.hidden=!open;s.innerHTML=open?sheetV():''}
-function save(){try{localStorage.setItem('mp',JSON.stringify(S))}catch(e){}
-  clearTimeout(timer);timer=setTimeout(async()=>{if(dbDoc){try{await dbDoc.set({people:S.people})}catch(e){}}},400)}
+function save(){
+  try{localStorage.setItem('mp',JSON.stringify(S))}catch(e){}
+  clearTimeout(timer);
+  timer=setTimeout(async()=>{
+    if(!currentUser)return;
+    try{
+      const {error}=await supabase
+        .from('app_data')
+        .upsert({'user-id':currentUser.id,data:S},{onConflict:'user-id'});
+      if(error)throw error;
+    }catch(e){
+      console.error('Erreur de sauvegarde Supabase:',e);
+    }
+  },400);
+}
 function addLog(p,type,text){(p.log=p.log||[]).push({date:today(),type,text});p.last=today();p.flag=false}
 
 document.addEventListener('click',e=>{
@@ -126,21 +165,126 @@ document.addEventListener('change',e=>{
   p[f]=f==='freq'?+e.target.value:f==='flag'?e.target.checked:e.target.value;save();if(f!=='care'&&f!=='needs')render()});
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='nn')document.querySelector('[data-act=add]').click();if(e.key==='Escape'&&open){open=null;render()}});
 
-async function init(){
-  try{const l=localStorage.getItem('mp');if(l)S=JSON.parse(l)}catch(e){}
-  render();
-  try{
-    if(!window.claude)return;
-    const [db,user]=await Promise.all([claude.use('db'),claude.use('user')]);
-    if(!db||!user)return;
-    const id=await user.id();if(!id)return;
-    dbDoc=db.doc('data/users/'+id+'/app');
-    const sn=await dbDoc.get();
-    if(sn.exists){S={people:(sn.data().people)||[]};try{localStorage.setItem('mp',JSON.stringify(S))}catch(e){}}
-    else if(S.people.length){dbDoc.set({people:S.people}).catch(()=>{})}
-    render();
-  }catch(e){}
+let currentUser=null;
+
+function setAuthMessage(msg,bad=false){
+  const el=$('#authMsg');
+  el.textContent=msg||'';
+  el.className='authmsg'+(bad?' bad':'');
 }
+
+function showApp(user){
+  currentUser=user;
+  document.body.classList.remove('locked');
+  $('#auth').hidden=true;
+  $('#authUser').hidden=false;
+  $('#authEmailLabel').textContent=user.email||'';
+}
+
+function showLogin(){
+  currentUser=null;
+  document.body.classList.add('locked');
+  $('#auth').hidden=false;
+  $('#authUser').hidden=true;
+}
+
+async function loadCloud(user){
+  try{
+    const {data:row,error}=await supabase
+      .from('app_data')
+      .select('data')
+      .eq('user-id',user.id)
+      .maybeSingle();
+
+    if(error)throw error;
+
+    if(row && row.data){
+      S=row.data;
+      try{localStorage.setItem('mp',JSON.stringify(S))}catch(e){}
+    }else{
+      // Première connexion : on migre les données locales existantes vers le cloud.
+      let local=null;
+      try{
+        const l=localStorage.getItem('mp');
+        if(l)local=JSON.parse(l);
+      }catch(e){}
+      if(local && Array.isArray(local.people) && local.people.length){
+        S=local;
+        const {error:saveError}=await supabase
+          .from('app_data')
+          .upsert({'user-id':user.id,data:S},{onConflict:'user-id'});
+        if(saveError)throw saveError;
+      }else{
+        S={people:[]};
+      }
+    }
+  }catch(e){
+    console.error('Erreur de chargement Supabase:',e);
+    setAuthMessage('Impossible de charger tes données. Vérifie la connexion et les règles RLS.',true);
+  }
+}
+
+async function init(){
+  showLogin();
+
+  const {data:{session}}=await supabase.auth.getSession();
+
+  if(session?.user){
+    showApp(session.user);
+    await loadCloud(session.user);
+    render();
+  }else{
+    render();
+  }
+
+  supabase.auth.onAuthStateChange(async(event,session)=>{
+    if(session?.user){
+      showApp(session.user);
+      setAuthMessage('');
+      await loadCloud(session.user);
+      render();
+    }else{
+      showLogin();
+      render();
+    }
+  });
+}
+
+$('#authBtn').addEventListener('click',async()=>{
+  const email=$('#authEmail').value.trim();
+  const password=$('#authPassword').value;
+  if(!email||!password){
+    setAuthMessage('Entre ton e-mail et ton mot de passe.',true);
+    return;
+  }
+
+  $('#authBtn').disabled=true;
+  setAuthMessage('Connexion…');
+
+  const {data,error}=await supabase.auth.signInWithPassword({email,password});
+
+  $('#authBtn').disabled=false;
+
+  if(error){
+    setAuthMessage('Connexion impossible : '+error.message,true);
+    return;
+  }
+
+  if(data?.user){
+    showApp(data.user);
+    await loadCloud(data.user);
+    render();
+  }
+});
+
+$('#authPassword').addEventListener('keydown',e=>{
+  if(e.key==='Enter')$('#authBtn').click();
+});
+
+$('#logoutBtn').addEventListener('click',async()=>{
+  await supabase.auth.signOut();
+});
+
 init();
 </script>
 <!-- Contenu intégré de « Mes proches.md » :
