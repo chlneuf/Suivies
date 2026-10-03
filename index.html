@@ -71,36 +71,14 @@ body.locked>header,body.locked>main,body.locked>nav{display:none}
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-window.addEventListener('error',function(e){
-  if(e.target && e.target.tagName==='SCRIPT' && e.target.src && e.target.src.includes('supabase-js')){
-    const m=document.getElementById('authMsg');
-    if(m){
-      m.textContent='Impossible de charger Supabase. Vérifie Internet puis recharge la page.';
-      m.className='authmsg bad';
-    }
-  }
-});
+if(!window.supabase){
+  document.write('<script src="https://unpkg.com/@supabase/supabase-js@2"><\\/script>');
+}
 </script>
 <script>
 const SUPABASE_URL='https://fvrypajrzrcprodopkec.supabase.co';
 const SUPABASE_KEY='sb_publishable_n4Q6vjSvenlnM91Afcl5bQ_S-tceUrF';
-
 let supabase=null;
-
-function supabaseReady(){
-  if(window.supabase && typeof window.supabase.createClient==='function'){
-    try{
-      supabase=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
-      return true;
-    }catch(e){
-      console.error('Supabase:',e);
-    }
-  }
-  setAuthMessage('Supabase ne se charge pas. Vérifie ta connexion Internet puis recharge la page.',true);
-  return false;
-}
-
-supabaseReady();
 
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -233,6 +211,21 @@ function setAuthMessage(msg,bad=false){
   el.className='authmsg'+(bad?' bad':'');
 }
 
+function initSupabaseClient(){
+  if(!window.supabase || typeof window.supabase.createClient!=='function'){
+    setAuthMessage('Erreur : Supabase ne se charge pas dans ce navigateur.',true);
+    return false;
+  }
+  try{
+    supabase=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+    return true;
+  }catch(e){
+    console.error('Erreur création Supabase:',e);
+    setAuthMessage('Erreur de configuration Supabase : '+(e.message||'inconnue'),true);
+    return false;
+  }
+}
+
 function showApp(user){
   currentUser=user;
   document.body.classList.remove('locked');
@@ -302,7 +295,7 @@ async function signIn(){
   const password=$('#authPassword').value;
 
   if(!supabase){
-    setAuthMessage('Supabase n’est pas chargé. Recharge la page puis réessaie.',true);
+    setAuthMessage('Supabase n’est pas initialisé. Recharge la page.',true);
     return;
   }
 
@@ -382,10 +375,12 @@ $('#authPassword').addEventListener('keydown',e=>{
   if(e.key==='Enter')signIn();
 });
 $('#logoutBtn').addEventListener('click',async()=>{
-  await supabase.auth.signOut();
+  if(supabase) await supabase.auth.signOut();
 });
 
-init();
+if(initSupabaseClient()){
+  init();
+}
 </script>
 <!-- Contenu intégré de « Mes proches.md » :
 # Mes proches
