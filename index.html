@@ -71,9 +71,36 @@ body.locked>header,body.locked>main,body.locked>nav{display:none}
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+window.addEventListener('error',function(e){
+  if(e.target && e.target.tagName==='SCRIPT' && e.target.src && e.target.src.includes('supabase-js')){
+    const m=document.getElementById('authMsg');
+    if(m){
+      m.textContent='Impossible de charger Supabase. Vérifie Internet puis recharge la page.';
+      m.className='authmsg bad';
+    }
+  }
+});
+</script>
+<script>
 const SUPABASE_URL='https://fvrypajrzrcprodopkec.supabase.co';
 const SUPABASE_KEY='sb_publishable_n4Q6vjSvenlnM91Afcl5bQ_S-tceUrF';
-const supabase=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+
+let supabase=null;
+
+function supabaseReady(){
+  if(window.supabase && typeof window.supabase.createClient==='function'){
+    try{
+      supabase=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+      return true;
+    }catch(e){
+      console.error('Supabase:',e);
+    }
+  }
+  setAuthMessage('Supabase ne se charge pas. Vérifie ta connexion Internet puis recharge la page.',true);
+  return false;
+}
+
+supabaseReady();
 
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -160,17 +187,11 @@ function save(){
   timer=setTimeout(async()=>{
     if(!currentUser)return;
     try{
-      const result=await fetch(SUPABASE_URL+'/rest/v1/app_data?on_conflict=user-id',{
-        method:'POST',
-        headers:{
-          'apikey':SUPABASE_KEY,
-          'Authorization':'Bearer '+SUPABASE_KEY,
-          'Content-Type':'application/json',
-          'Prefer':'resolution=merge-duplicates,return=minimal'
-        },
-        body:JSON.stringify({'user-id':currentUser.id,data:S})
-      });
-      if(!result.ok)throw new Error('Erreur de sauvegarde : '+result.status);
+      const result=await supabase.from('app_data').upsert(
+        {'user-id':currentUser.id,data:S},
+        {onConflict:'user-id'}
+      );
+      if(result.error)throw result.error;
     }catch(e){console.error(e)}
   },400)
 }
@@ -279,6 +300,11 @@ async function loadCloud(user){
 async function signIn(){
   const email=$('#authEmail').value.trim();
   const password=$('#authPassword').value;
+
+  if(!supabase){
+    setAuthMessage('Supabase n’est pas chargé. Recharge la page puis réessaie.',true);
+    return;
+  }
 
   if(!email||!password){
     setAuthMessage('Entre ton e-mail et ton mot de passe.',true);
